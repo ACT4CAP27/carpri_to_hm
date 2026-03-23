@@ -18,7 +18,7 @@ library(ggpubr)
 library(stringr)
 library(gamstransfer)
 library(countrycode)
-library(parallel)
+# library(parallel)
 library(future)
 library(future.apply)
 
@@ -71,7 +71,7 @@ EXT_c_var <- read_xlsx(path = utilities_file, sheet = "EXT_c_var")
 #_______________________________________________________________________________
 
 ## Set-up parallel cores ----
-plan(multisession, workers = parallel::detectCores() - 1)
+# plan(multisession, workers = parallel::detectCores() - 1)
 
 unit_map <- setNames(as.character(EXT_c_var$UNIT_LVL1), EXT_c_var$CODE_LVL1)
 
