@@ -9,18 +9,17 @@ dir.create("mapping_output", showWarnings = FALSE)
 # mapping file name
 mapping_file <- "Mapping_scheme_DIA_CAPRI.xlsx"
 
+#data with waste or without (INHA and INHA_nowaste)
+waste <- "INHA"
+
 library(data.table)
-library(dplyr)
+#library(dplyr)
+library(dtplyr)
+library(dplyr, warn.conflicts = FALSE)
 library(readxl)
 library(tidyverse)
-library(ggplot2)
-library(ggpubr)
-library(stringr)
 library(gamstransfer)
 library(countrycode)
-# library(parallel)
-library(future)
-library(future.apply)
 
 ################################################################################
 # 1. Modify and filter the CAPRI data
@@ -69,9 +68,6 @@ EXT_c_var <- read_xlsx(path = utilities_file, sheet = "EXT_c_var")
 #_______________________________________________________________________________
 # FUNCTIONS ####
 #_______________________________________________________________________________
-
-## Set-up parallel cores ----
-# plan(multisession, workers = parallel::detectCores() - 1)
 
 unit_map <- setNames(as.character(EXT_c_var$UNIT_LVL1), EXT_c_var$CODE_LVL1)
 
@@ -176,6 +172,13 @@ agg_funs <- list(
   INHA_nowaste    = function(x) sum(x, na.rm = TRUE)
 )
 
+# df_market2 <- imap_dfr(agg_funs, function(fun, var) { 
+#   df_commodities %>% filter(Variable == var) %>% 
+#     group_by(Module, Scenario, Region, Item, Variable, Year, Unit) %>% 
+#     summarise(Value = fun(Value), .groups = "drop") 
+# }
+# )
+
 df_market2 <- imap_dfr(agg_funs, function(fun, var) { 
   df_commodities %>% filter(Variable == var) %>% 
     group_by(Module, Scenario, Region, Item, Variable, Year, Unit) %>% 
@@ -189,34 +192,54 @@ df_aggregation <- bind_rows(df_market1, df_market2) %>% distinct()
 # SAVED CSV ####
 #_______________________________________________________________________________
 
+# Final filter before saving
 df_accelerator <- df_aggregation %>%
+  lazy_dt() %>%
   filter(
     Region %in% CAPRI_r$CODE_LVL1,
     (Variable == "INHA"  & Item %in% CAPRI_c$CODE_LVL1) |
       (Variable == "INHA_nowaste"  & Item %in% CAPRI_c$CODE_LVL1) |
-      (Variable == "N_CAL" & Item %in% CAPRI_c$CODE_LVL4)
+      (Variable == "N_CAL" & Item %in% CAPRI_c$CODE_LVL1)
   ) %>%
   mutate(
     Value = if_else(Variable %in% c("INHA","INHA_nowaste"), Value / 365, Value),
     Unit  = if_else(Variable %in% c("INHA","INHA_nowaste"), "[kg/p/d]", Unit)
+  ) %>%
+  as_tibble()
+
+
+df_inha <- df_aggregation %>%
+  filter(
+    Region %in% CAPRI_r$CODE_LVL1,
+    Variable %in% c("INHA", "INHA_nowaste"),
+    Item %in% CAPRI_c$CODE_LVL1
+  ) %>%
+  mutate(
+    Value = Value / 365,
+    Unit  = "[kg/p/d]"
   )
 
-results_file_name <- "Accelerator_results.csv"
-write.csv(df_accelerator, file = file.path(input_dir, results_file_name),   row.names = FALSE)
+df_ncal <- df_aggregation %>%
+  filter(
+    Region %in% CAPRI_r$CODE_LVL1,
+    Variable == "N_CAL",
+    Item %in% CAPRI_c$CODE_LVL1
+  ) %>%
+  group_by(Module, Scenario, Region, Variable, Year, Unit) %>%
+  summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Item = "AGR")  # label the summed row
+
+df_accelerator <- bind_rows(df_inha, df_ncal)
+
+# results_file_name <- "Accelerator_results.csv"
+# write.csv(df_accelerator, file = file.path(input_dir, results_file_name),   row.names = FALSE)
 
 # capri results (data which shall be analysed in terms of health impacts)
-capri_results <- fread(file.path(input_dir, results_file_name))
-
-
-
-
+capri_results <- df_accelerator
 
 ################################################################################
 # 2. Map regions
 ################################################################################
-
-
-
 
 #_______________________________________________________________________________
 # DATA ####
@@ -258,7 +281,6 @@ regions_capri_dia_map <- map_to_dia_rg_df_join %>%
   rename("Code_Capri" = CODE_LVL1,
          "Name Capri" = NAME_LVL1,
          "ISO3" = iso_3)
-
 
 #_______________________________________________________________________________
 # # Note: The region mapping needs some modifications. 
@@ -394,15 +416,9 @@ write.csv(template_rgs_map,
           file = "mapping_output/map_reg.csv",
           row.names = FALSE)
 
-
-
-
 ################################################################################
 #3. Map foods
 ################################################################################
-
-
-
 
 #_______________________________________________________________________________
 # DATA ####
@@ -439,8 +455,10 @@ capri_results <- capri_results %>%
     Unit == "[kg/p/d]"   ~ "g/d",
     Unit == "[kcal/p/d]" ~ "kcal/d",
     TRUE ~ Unit
-  ))
-
+  )) %>%
+  filter (
+    Variable == waste | Variable == "N_CAL",
+  )
 
 #_______________________________________________________________________________
 # Identify relevant commodities from the results file ####
@@ -569,14 +587,24 @@ mapped_to_template_commodities <- capri_results_final %>%
     value      = Value
   )
 
-#MOCK UP - delete later - just duplicating Scnerio to create REF
+ref_duplicates <- mapped_to_template_commodities %>%
+  filter(str_detect(scenario, "_REF\\.gdx$")) %>%
+  mutate(scenario = "REF")
 
-mapped_to_template_commodities_ref <- bind_rows(
+mapped_to_template_commodities_final <- bind_rows(
   mapped_to_template_commodities,
-  mapped_to_template_commodities %>% mutate(scenario = "REF")
+  ref_duplicates
+) %>%
+  arrange(year, scenario, region, food_group)
+
+# check
+mapped_to_template_commodities_final %>%
+  distinct(year, scenario) %>%
+  arrange(year, scenario) %>%
+  print()
+
+write.csv(
+  mapped_to_template_commodities_final,
+  file = "mapping_output/map_fg.csv",
+  row.names = FALSE
 )
-
-
-write.csv(mapped_to_template_commodities_ref, 
-          file = "mapping_output/map_fg.csv", 
-          row.names = FALSE)
